@@ -168,7 +168,7 @@ def routing_method_time(CS_list, pev, simple_graph):
     if pev.charged != 1:
         for cs in CS_list:
 
-            came_from, cost_so_far = dijkstra_search(simple_graph, pev.curr_location, cs.id)
+            came_from, cost_so_far = a_star_search(simple_graph, pev.curr_location, cs.id)
             front_path = reconstruct_path(came_from, pev.curr_location, cs.id)
             front_path_distance = simple_graph.get_path_distance(front_path)
             front_weight = cost_so_far[cs.id]
@@ -176,7 +176,7 @@ def routing_method_time(CS_list, pev, simple_graph):
             if evcango <= front_path_distance:
                 break
 
-            came_from, cost_so_far = dijkstra_search(simple_graph, cs.id, pev.destination)
+            came_from, cost_so_far = a_star_search(simple_graph, cs.id, pev.destination)
             rear_path = reconstruct_path(came_from, cs.id, pev.destination)
             rear_path_distance = simple_graph.get_path_distance(rear_path)
             rear_weight = cost_so_far[pev.destination]
@@ -188,7 +188,7 @@ def routing_method_time(CS_list, pev, simple_graph):
 
             paths_info.append((total_weight, total_dist, front_path + rear_path[1:], cs))
     else:
-        came_from, cost_so_far = dijkstra_search(simple_graph, pev.curr_location, pev.destination)
+        came_from, cost_so_far = a_star_search(simple_graph, pev.curr_location, pev.destination)
         path = reconstruct_path(came_from, pev.curr_location, pev.destination)
         path_distance = simple_graph.get_path_distance(path)
         path_weight = cost_so_far[pev.destination]
@@ -640,6 +640,8 @@ def a_star_search(graph, start, goal):
     cost_so_far[start] = 0
     while not frontier.empty():
         current = frontier.get()
+        print('frontier.get()', current)
+
         if current == goal:
             break
         for next in graph.neighbors(current):
@@ -648,6 +650,8 @@ def a_star_search(graph, start, goal):
                 cost_so_far[next] = new_cost
                 priority = new_cost + heuristic(graph.nodes_xy[goal], graph.nodes_xy[next])
                 frontier.put(next, priority)
+                print('frontier.put()', next, priority)
+
                 came_from[next] = current
 
     return came_from, cost_so_far
@@ -664,8 +668,13 @@ def reconstruct_path(came_from, start, goal):
     return path
 
 if __name__ == "__main__":
-    main()
+    # main()
+
+    sim_algorithm_time()
+
+
     # np.random.seed(100)
+
     # test = []
     # for i in range(100):
     #     a = np.random.normal(120, 30)

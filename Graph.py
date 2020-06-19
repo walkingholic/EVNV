@@ -1,5 +1,11 @@
 import data_gen
 import pprint as pp
+import numpy as np
+import matplotlib.pyplot as plt
+import heapq
+import datetime
+import os
+
 
 class Graph:
     def __init__(self):
@@ -92,7 +98,7 @@ class Link:
 
 class Graph_jeju:
     def __init__(self, datapath):
-        self.link_data, self.node_data, self.traffic_info = data_gen.network_info(datapath)
+        self.link_data, self.node_data, self.traffic_info, self.cs_info = data_gen.network_info(datapath)
         self.num_node =  len(self.node_data)
         self.num_link = len(self.link_data)
         self.neighbors_list = {}
@@ -100,13 +106,13 @@ class Graph_jeju:
         self.source_node_set = set()
         self.destination_node_set = set()
 
-        print('link 4070105400', self.link_data[4070105400])
+        # print('link 4070105400', self.link_data[4070105400])
 
         print('Num links from link data', len(self.link_data.keys()))
         print('Num node from link data', len(self.node_data.keys()))
         count = 0
         errorlink = 0
-        remove_link_list = []
+
         for l in self.link_data.keys():
 
             if l in self.traffic_info.keys():
@@ -118,40 +124,20 @@ class Graph_jeju:
 
                     errorlink += 1
             else:
-                remove_link_list.append(l)
+                maxspd = self.link_data[l]['MAX_SPD']
+                self.traffic_info[l] = list(np.random.random_integers(maxspd-maxspd*0.3, maxspd, 288))
+
 
 
 
         print('Num links from traffic data', len(self.traffic_info.keys()))
-
-        for l in remove_link_list:
-            self.link_data.pop(l)
-
         print('Modified Num link', len(self.link_data.keys()))
 
-        node = set()
         for l in self.link_data.keys():
-            node.add(self.link_data[l]['F_NODE'])
             self.source_node_set.add(self.link_data[l]['F_NODE'])
-            node.add(self.link_data[l]['T_NODE'])
             self.destination_node_set.add(self.link_data[l]['T_NODE'])
 
-        if 4070043200 in node:
-            print('4070043200 in ')
-
-        test = {}
-        for n in node:
-            if n in self.node_data.keys():
-                test[n] = self.node_data[n]
-            else:
-                print(n, 'something error')
-        print(test)
-        self.node_data = test
-        print(self.node_data)
-
-        print(len(node), len(test), len(self.node_data))
-
-        print('Modified Num node', len(self.node_data.keys()))
+        # print(len(self.node_data), len(self.source_node_set), len(self.destination_node_set))
 
         for lid in self.link_data.keys():
 
@@ -164,9 +150,6 @@ class Graph_jeju:
                 self.link_pair_data[(self.link_data[lid]['F_NODE']), self.link_data[lid]['T_NODE']].append(lid)
             else:
                 self.link_pair_data[(self.link_data[lid]['F_NODE']), self.link_data[lid]['T_NODE']] = [lid]
-
-        # print('neighbors_list', len(self.neighbors_list.keys()))
-        # print('link 4070105400', self.link_data[4070105400])
 
 
 
@@ -187,10 +170,7 @@ class Graph_jeju:
 
     def weight(self, fromnode, tonode):
         n, link_id_list = self.get_link_id(fromnode, tonode)
-        # print(n, link_id_list, self.link_data[link_id_list[0]]['WEIGHT'])
-        # print( fromnode, tonode)
-        # for lid in link_id_list:
-        #     pp.pprint(self.link_data[lid])
+        lid = link_id_list[0]
         return self.link_data[link_id_list[0]]['WEIGHT']
 
     def distance(self, link_id):
@@ -207,15 +187,112 @@ class Graph_jeju:
         # link_id = self.get_link_id(fromnode, tonode)
         return self.link_data[link_id]['CUR_SPD']
 
+    def velocity(self, fromnode, tonode, tidx):
+        # link_id = self.get_link_id(fromnode, tonode)
+        n, link_id_list = self.get_link_id(fromnode, tonode)
+        link_id = link_id_list[0]
+        return self.traffic_info[link_id][tidx]
+
     def nodes_xy(self, nidx):
-        # print(node_id)
-        # print(self.node_data[nidx]['long'])
-        # print(self.node_data[nidx]['lat'])
         return (self.node_data[nidx]['long'], self.node_data[nidx]['lat'])
 
-if __name__ == "__main__":
+    def get_path_distance(self, path):
+        distance=0
+        for i in range(len(path)-1):
+            fromenode = path[i]
+            tonode = path[i+1]
+            distance = distance+self.distance(fromenode, tonode)
+        return distance
 
-    g = Graph_jeju('data/20191001_5Min_modified.csv')
+    def get_path_weight(self, path):
+        weight = 0
+        for i in range(len(path) - 1):
+            fromenode = path[i]
+            tonode = path[i + 1]
+            weight = weight + self.weight(fromenode, tonode)
+        return weight
+
+    def get_path_avg_velo(self, path, tidx):
+        sumvelo = 0
+        for i in range(len(path) - 1):
+            fromenode = path[i]
+            tonode = path[i + 1]
+            sumvelo = sumvelo + self.velocity(fromenode, tonode, tidx)
+        return sumvelo/(len(path) - 1)
+
+    def get_path_drivingtime(self, path, tidx):
+        dtime = 0.0
+
+        for i in range(len(path) - 1):
+            fromenode = path[i]
+            tonode = path[i + 1]
+            dtime = dtime + self.distance(fromenode, tonode) / self.velocity(fromenode, tonode, tidx)
+
+        return dtime
+
+class PriorityQueue:
+    def __init__(self):
+        self.elements = []
+
+    def empty(self):
+        return len(self.elements) == 0
+
+    def put(self, item, priority):
+        heapq.heappush(self.elements, (priority, item))
+
+    def get(self):
+        return heapq.heappop(self.elements)[1]
+
+def createFolder(directory):
+    try:
+        if not os.path.isdir(directory):
+            os.makedirs(directory)
+    except OSError:
+        print('error')
+
+
+if __name__ == "__main__":
+    # now = datetime.datetime.now()
+    # basepath = os.getcwd()
+    # resultdir = '{0:02}-{1:02} {2:02}-{3:02} result'.format(now.month, now.day, now.hour, now.minute)
+    # print(os.path.join(basepath, resultdir))
+    # dirpath = os.path.join(basepath, resultdir)
+    # createFolder(dirpath)
+    # qq = PriorityQueue()
+    # qq.put(1, 10)
+    # qq.put(2, 20)
+    # qq.put(3, 30)
+    #
+    # n = qq.get()
+    # print(n)
+
+
+    # g = Graph_jeju('data/20191001_5Min_modified.csv')
     # print(g.get_link_id(4050001500, 4050001800))
 
-    print(g.neighbors_list[4070043200])
+    # print(g.neighbors_list[4070043200])
+    # nlist = np.random.random_integers(0, 10, 50)
+    # print(nlist)
+    # plt.plot(range(50), nlist, 'x', label='t1 EVCS')
+    # nlist = np.random.random_integers(0, 10, 50)
+    # plt.plot(range(50), nlist, '+', label='t2 EVCS')
+    # fig = plt.gcf()
+    # fig.savefig('t1.png', facecolor='#eeeeee')
+    # plt.clf()
+    #
+    #
+    plt.figure(figsize=(12, 6), dpi=300)
+    plt.title('Initial SOC')
+    plt.xlabel('EV ID')
+    plt.ylabel('SOC')
+    nlist = np.random.random_integers(0, 10, 50)
+    print(nlist)
+
+    plt.plot(range(50), nlist, '-', label='t1 EVCS')
+    nlist = np.random.random_integers(0, 10, 50)
+    plt.plot(range(50), nlist, '-', label='t2 EVCS')
+    #
+    # plt.show()
+    # fig = plt.gcf()
+    plt.savefig('test.png', facecolor='#eeeeee')
+    plt.clf()
