@@ -42,7 +42,6 @@ class CS:
         self.x = long
         self.y = lat
 
-
 class EV:
     def __init__(self, id, t_start, soc, source, destination):
         self.id = id
