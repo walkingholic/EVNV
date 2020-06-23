@@ -2,6 +2,7 @@ import csv
 import datetime
 import os
 import numpy as np
+from Graph import Graph
 import matplotlib.pyplot as plt
 
 # now = datetime.datetime.now()
@@ -48,8 +49,6 @@ class EV:
         self.path=[]
         self.predic_totaltraveltime = 0.0
 
-
-
 def test(**dic):
     keyname = ''
     for key in dic.keys():
@@ -77,48 +76,92 @@ def test(**dic):
     # plt.legend()
     # plt.show()
 
+def make_simple_data_gen():
+    f = open('data/node_info_100evs.csv', 'w', encoding='UTF8', newline='')
+    fw = csv.writer(f)
 
+    graph = Graph()
+
+    fw.writerow(['NODE_ID', 'NODE_TYPE', 'NODE_NAME', 'TURN_P', 'REMARK', 'x', 'y'])
+    for i in range(graph.num_node):
+        print(i, graph.nodes_xy[i])
+        x, y = graph.nodes_xy[i]
+        fw.writerow([i, 0, 0, 0, 0, float(x), float(y)])
+    f.close()
+
+    f = open('data/link_info_100evs.csv', 'w', encoding='UTF8', newline='')
+    fw = csv.writer(f)
+    fw.writerow(
+        ['LINK_ID', 'F_NODE', 'T_NODE', 'LANES_', 'ROAD_RANK_', 'ROAD_TYPE_', 'ROAD_NO_', 'ROAD_NAME_', 'ROAD_USE_',
+         'MULTILINK', 'CONNECT_', 'MAX_SPD_', 'REST_VEH_', 'REST_W_', 'REST_H_', 'LENGTH', 'REMARK_'])
+
+    linkid = 0
+    for i in range(graph.num_node):
+        edges = graph.dict_edges[i]
+
+        for j, value in edges.items():
+            print(linkid, i, j, value)
+            if edges[j]['road type'] == 1:
+                fw.writerow([linkid, i, j, 'LANES_', 'ROAD_RANK_', 1, 'ROAD_NO_', 'ROAD_NAME_',
+                             'ROAD_USE_', 'MULTILINK', 'CONNECT_', '80', 'REST_VEH_', 'REST_W_', 'REST_H_',
+                             edges[j]['dist'] * 1000,
+                             'REMARK_'])
+            else:
+                fw.writerow([linkid, i, j, 'LANES_', 'ROAD_RANK_', 2, 'ROAD_NO_', 'ROAD_NAME_',
+                             'ROAD_USE_', 'MULTILINK', 'CONNECT_', '60', 'REST_VEH_', 'REST_W_', 'REST_H_',
+                             edges[j]['dist'] * 1000,
+                             'REMARK_'])
+            linkid += 1
 
 
 if __name__ == "__main__":
 
-    EV_list_1 = []
-    num_evs = 10
-    for e in range(num_evs):
-        t_start = np.random.uniform(0, 1200)
-        soc = np.random.uniform(0.3, 0.5)
-        while soc <= 0.0 or soc > 1.0:
-            soc = np.random.uniform(0.3, 0.5)
-        source = np.random.random_integers(0, 20)
-        destination = np.random.random_integers(0, 20)
+    print('test')
+    linetype = ['-','--', ':','-.']
+    for i, v in enumerate(a):
+        # print(i, v)
+        print(a[i])
 
-        ev = EV(e, t_start, soc, source, destination)
-        EV_list_1.append(ev)
+    # make_simple_data_gen()
 
-    EV_list_2 = []
-    num_evs = 10
-    for e in range(num_evs):
-        t_start = np.random.uniform(0, 1200)
-        soc = np.random.uniform(0.3, 0.5)
-        while soc <= 0.0 or soc > 1.0:
-            soc = np.random.uniform(0.3, 0.5)
-        source = np.random.random_integers(0, 20)
-        destination = np.random.random_integers(0, 20)
 
-        ev = EV(e, t_start, soc, source, destination)
-        EV_list_2.append(ev)
-
-    EV_list_3 = []
-    num_evs = 10
-    for e in range(num_evs):
-        t_start = np.random.uniform(0, 1200)
-        soc = np.random.uniform(0.3, 0.5)
-        while soc <= 0.0 or soc > 1.0:
-            soc = np.random.uniform(0.3, 0.5)
-        source = np.random.random_integers(0, 20)
-        destination = np.random.random_integers(0, 20)
-
-        ev = EV(e, t_start, soc, source, destination)
-        EV_list_3.append(ev)
-
-    test(EV_list_1=EV_list_1, EV_list_2=EV_list_2, EV_list_3=EV_list_3)
+    # EV_list_1 = []
+    # num_evs = 10
+    # for e in range(num_evs):
+    #     t_start = np.random.uniform(0, 1200)
+    #     soc = np.random.uniform(0.3, 0.5)
+    #     while soc <= 0.0 or soc > 1.0:
+    #         soc = np.random.uniform(0.3, 0.5)
+    #     source = np.random.random_integers(0, 20)
+    #     destination = np.random.random_integers(0, 20)
+    #
+    #     ev = EV(e, t_start, soc, source, destination)
+    #     EV_list_1.append(ev)
+    #
+    # EV_list_2 = []
+    # num_evs = 10
+    # for e in range(num_evs):
+    #     t_start = np.random.uniform(0, 1200)
+    #     soc = np.random.uniform(0.3, 0.5)
+    #     while soc <= 0.0 or soc > 1.0:
+    #         soc = np.random.uniform(0.3, 0.5)
+    #     source = np.random.random_integers(0, 20)
+    #     destination = np.random.random_integers(0, 20)
+    #
+    #     ev = EV(e, t_start, soc, source, destination)
+    #     EV_list_2.append(ev)
+    #
+    # EV_list_3 = []
+    # num_evs = 10
+    # for e in range(num_evs):
+    #     t_start = np.random.uniform(0, 1200)
+    #     soc = np.random.uniform(0.3, 0.5)
+    #     while soc <= 0.0 or soc > 1.0:
+    #         soc = np.random.uniform(0.3, 0.5)
+    #     source = np.random.random_integers(0, 20)
+    #     destination = np.random.random_integers(0, 20)
+    #
+    #     ev = EV(e, t_start, soc, source, destination)
+    #     EV_list_3.append(ev)
+    #
+    # test(EV_list_1=EV_list_1, EV_list_2=EV_list_2, EV_list_3=EV_list_3)

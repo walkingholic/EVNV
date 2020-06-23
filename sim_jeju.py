@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import heapq
-from Graph import Graph
+from Graph import Graph_simple
 from Graph import Graph_jeju
 import pprint as pp
 import copy
@@ -178,6 +178,51 @@ def gen_envir_jeju(traffic_data_path, num_evs):
 
     return EV_list, CS_list, graph
 
+def gen_envir_simple(num_evs):
+    np.random.seed(10)
+    graph = Graph_simple()
+
+    EV_list = []
+
+    for e in range(num_evs):
+        t_start =  np.random.uniform(0, 1200)
+        soc = np.random.uniform(0.3, 0.5)
+        while soc <= 0.0 or soc > 1.0 :
+            soc = np.random.uniform(0.3, 0.5)
+        graph.source_node_set = list(graph.source_node_set)
+        graph.destination_node_set = list(graph.destination_node_set)
+        source = graph.source_node_set[np.random.random_integers(0, len(graph.source_node_set) - 1)]
+
+        destination = graph.source_node_set[np.random.random_integers(0, len(graph.source_node_set) - 1)]
+
+        while destination in graph.cs_info.keys():
+            destination = graph.source_node_set[np.random.random_integers(0, len(graph.source_node_set) - 1)]
+        # source = 4080021700
+        # destination = 4070008103
+        ev = EV(e, t_start, soc, source, destination)
+        EV_list.append(ev)
+
+    CS_list = []
+    for l in graph.cs_info:
+
+        # print('gen cs')
+        # alpha = np.random.uniform(0.03, 0.07)
+        alpha = np.random.uniform(0.03, 0.07)
+
+        price = np.random.normal(alpha, 0.15 * alpha)
+        while price < 0:
+            price = np.random.normal(alpha, 0.15 * alpha)
+
+        waittime = np.random.normal(-1200 * (price - 0.07), 20)
+        # waittime = np.random.normal(alpha, alpha*0.1)
+
+        while waittime < 0:
+            waittime = 0
+
+        cs = CS(l, price, waittime, graph.cs_info[l]['long'], graph.cs_info[l]['lat'], alpha)
+        CS_list.append(cs)
+
+    return EV_list, CS_list, graph
 
 def gen_evcs_random(cs):
     cs.price = np.random.normal(cs.alpha, 0.15 * cs.alpha)
@@ -527,6 +572,7 @@ def sim_main_first_time_check(t_EV_list, t_CS_list, t_graph):
             front_path_distance = graph.get_path_distance(front_path)
 
             if front_path_distance > evcango:
+                print(pev.SOC)
                 continue
 
             came_from, cost_so_far = a_star_search(graph, evcs, end)
@@ -867,6 +913,395 @@ def update_ev(pev, simple_graph, fnode, tnode, sim_time):
         pev.fdist += dist
 
     return sim_time + time_diff
+
+def sim_main_time_every_node_check(t_EV_list, t_CS_list, t_graph):
+    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
+    # Min total travel time
+    EV_list = copy.deepcopy(t_EV_list)
+    CS_list = copy.deepcopy(t_CS_list)
+    graph = copy.deepcopy(t_graph)
+    sim_n = 0
+
+    for pev in EV_list:
+        sim_time = pev.t_start
+        print("\n===========================time_every sim: {}==================================".format(sim_n))
+        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
+
+        start = pev.source
+        end = pev.destination
+        pev.curr_location = start
+        pev.path.append(start)
+
+        while pev.curr_location != end or pev.charged != 1:
+            here = pev.curr_location
+            paths_info = PriorityQueue()
+            update_envir_timeweight(CS_list, graph, sim_time)
+            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
+
+            if pev.cs != None  and pev.cs.id == pev.curr_location:
+                evcs=pev.cs
+                print('CS')
+                gen_evcs_random(evcs)
+                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
+                pev.chargingcost = pev.charingenergy * evcs.price
+                pev.SOC = pev.req_SOC
+                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
+                pev.waitingtime = evcs.waittime
+                pev.charged = 1
+                sim_time += pev.chargingtime
+                sim_time += evcs.waittime
+
+            if not pev.charged:
+                cslist = []
+                for cs in CS_list:
+                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
+                    if airdist < evcango:
+                        cslist.append(cs)
+                for cs in cslist:
+                    evcs_id = cs.id
+                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
+                    front_path = reconstruct_path(came_from, here, evcs_id)
+                    front_path_distance = graph.get_path_distance(front_path)
+                    if front_path_distance > evcango:
+                        continue
+                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
+                    rear_path = reconstruct_path(came_from, evcs_id, end)
+                    rear_path_distance = graph.get_path_distance(rear_path)
+                    final_path = front_path + rear_path[1:]
+                    dist = graph.get_path_distance(final_path)
+                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
+                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
+                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
+                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
+                    w = d_time + cs.waittime + c_time
+                    totaltraveltime = d_time + cs.waittime + c_time
+                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
+
+                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
+                pev.cs = evcs
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+            else:
+                came_from, cost_so_far = a_star_search(graph, here, end)
+                path = reconstruct_path(came_from, here, end)
+                path_distance = graph.get_path_distance(path)
+                if path_distance > evcango:
+                    print('error')
+                    input()
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+        print('CS charged:', pev.charged)
+        evcs = pev.cs
+        print('CS alpha:', evcs.alpha)
+        print('CS Waiting: ', evcs.waittime)
+        print('Distance(km): ', pev.drivingdistance)
+        print('Real Driving time(m): ', pev.drivingtime)
+        print('Real Charging energy(kwh): ', pev.charingenergy)
+        print('Real Charging time(m): ', pev.chargingtime)
+        print('Real Waiting time(m): ', evcs.waittime)
+        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
+
+        sim_n += 1
+
+    return EV_list
+
+def sim_main_dist_every_node_check(t_EV_list, t_CS_list, t_graph):
+    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
+    # Min total travel time
+    EV_list = copy.deepcopy(t_EV_list)
+    CS_list = copy.deepcopy(t_CS_list)
+    graph = copy.deepcopy(t_graph)
+    sim_n = 0
+
+    for pev in EV_list:
+        sim_time = pev.t_start
+        print("\n===========================dist_every sim: {}==================================".format(sim_n))
+        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
+
+        start = pev.source
+        end = pev.destination
+        pev.curr_location = start
+        pev.path.append(start)
+
+        while pev.curr_location != end or pev.charged != 1:
+            here = pev.curr_location
+            paths_info = PriorityQueue()
+            update_envir_distweight(CS_list, graph, sim_time)
+            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
+
+            if pev.cs != None  and pev.cs.id == pev.curr_location:
+                evcs=pev.cs
+                print('CS')
+                gen_evcs_random(evcs)
+                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
+                pev.chargingcost = pev.charingenergy * evcs.price
+                pev.SOC = pev.req_SOC
+                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
+                pev.waitingtime = evcs.waittime
+                pev.charged = 1
+                sim_time += pev.chargingtime
+                sim_time += evcs.waittime
+
+            if not pev.charged:
+                cslist = []
+                for cs in CS_list:
+                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
+                    if airdist < evcango:
+                        cslist.append(cs)
+                for cs in cslist:
+                    evcs_id = cs.id
+                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
+                    front_path = reconstruct_path(came_from, here, evcs_id)
+                    front_path_distance = graph.get_path_distance(front_path)
+                    if front_path_distance > evcango:
+                        continue
+                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
+                    rear_path = reconstruct_path(came_from, evcs_id, end)
+                    rear_path_distance = graph.get_path_distance(rear_path)
+                    final_path = front_path + rear_path[1:]
+                    dist = graph.get_path_distance(final_path)
+                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
+                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
+                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
+                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
+                    w = dist
+                    totaltraveltime = d_time + cs.waittime + c_time
+                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
+
+                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
+                pev.cs = evcs
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+            else:
+                came_from, cost_so_far = a_star_search(graph, here, end)
+                path = reconstruct_path(came_from, here, end)
+                path_distance = graph.get_path_distance(path)
+                if path_distance > evcango:
+                    print('error')
+                    input()
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+        evcs = pev.cs
+        print('CS alpha:', evcs.alpha)
+        print('CS Waiting: ', evcs.waittime)
+        print('Distance(km): ', pev.drivingdistance)
+        print('Real Driving time(m): ', pev.drivingtime)
+        print('Real Charging energy(kwh): ', pev.charingenergy)
+        print('Real Charging time(m): ', pev.chargingtime)
+        print('Real Waiting time(m): ', evcs.waittime)
+        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
+
+        sim_n += 1
+
+    return EV_list
+
+def sim_main_cost_every_node_check(t_EV_list, t_CS_list, t_graph):
+    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
+    # Min total travel time
+    EV_list = copy.deepcopy(t_EV_list)
+    CS_list = copy.deepcopy(t_CS_list)
+    graph = copy.deepcopy(t_graph)
+    sim_n = 0
+
+    for pev in EV_list:
+        sim_time = pev.t_start
+        print("\n===========================cost_everysim: {}==================================".format(sim_n))
+        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
+
+        start = pev.source
+        end = pev.destination
+        pev.curr_location = start
+        pev.path.append(start)
+
+        while pev.curr_location != end or pev.charged != 1:
+            here = pev.curr_location
+            paths_info = PriorityQueue()
+            update_envir_costweight(CS_list,pev, graph, sim_time)
+            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
+
+            if pev.cs != None  and pev.cs.id == pev.curr_location:
+                evcs=pev.cs
+                print('CS')
+                gen_evcs_random(evcs)
+                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
+                pev.chargingcost = pev.charingenergy * evcs.price
+                pev.SOC = pev.req_SOC
+                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
+                pev.waitingtime = evcs.waittime
+                pev.charged = 1
+                sim_time += pev.chargingtime
+                sim_time += evcs.waittime
+
+            if not pev.charged:
+                cslist = []
+                for cs in CS_list:
+                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
+                    if airdist < evcango:
+                        cslist.append(cs)
+                for cs in cslist:
+                    evcs_id = cs.id
+                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
+                    front_path = reconstruct_path(came_from, here, evcs_id)
+                    front_path_distance = graph.get_path_distance(front_path)
+                    if front_path_distance > evcango:
+                        continue
+                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
+                    rear_path = reconstruct_path(came_from, evcs_id, end)
+                    rear_path_distance = graph.get_path_distance(rear_path)
+                    final_path = front_path + rear_path[1:]
+                    cost_road = graph.get_path_weight(final_path) * 60
+
+                    dist = graph.get_path_distance(final_path)
+                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
+                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
+                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
+                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
+                    w = cost_road + c_energy*cs.price
+                    totaltraveltime = d_time + cs.waittime + c_time
+                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
+
+                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
+                pev.cs = evcs
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+            else:
+                came_from, cost_so_far = a_star_search(graph, here, end)
+                path = reconstruct_path(came_from, here, end)
+                path_distance = graph.get_path_distance(path)
+                if path_distance > evcango:
+                    print('error')
+                    input()
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+        evcs = pev.cs
+        print('CS alpha:', evcs.alpha)
+        print('CS Waiting: ', evcs.waittime)
+        print('Distance(km): ', pev.drivingdistance)
+        print('Real Driving time(m): ', pev.drivingtime)
+        print('Real Charging energy(kwh): ', pev.charingenergy)
+        print('Real Charging time(m): ', pev.chargingtime)
+        print('Real Waiting time(m): ', evcs.waittime)
+        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
+
+        sim_n += 1
+
+    return EV_list
+
+def sim_main_cost_time_every_node_check(t_EV_list, t_CS_list, t_graph):
+    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
+    # Min total travel time
+    EV_list = copy.deepcopy(t_EV_list)
+    CS_list = copy.deepcopy(t_CS_list)
+    graph = copy.deepcopy(t_graph)
+    sim_n = 0
+
+    for pev in EV_list:
+        sim_time = pev.t_start
+        print("\n===========================cost_time_every sim: {}==================================".format(sim_n))
+        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
+
+        start = pev.source
+        end = pev.destination
+        pev.curr_location = start
+        pev.path.append(start)
+
+        while pev.curr_location != end or pev.charged != 1:
+            here = pev.curr_location
+            paths_info = PriorityQueue()
+            update_envir_costtimeweight(CS_list, pev, graph, sim_time)
+            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
+
+            if pev.cs != None  and pev.cs.id == pev.curr_location:
+                evcs=pev.cs
+                print('CS')
+                gen_evcs_random(evcs)
+                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
+                pev.chargingcost = pev.charingenergy * evcs.price
+                pev.SOC = pev.req_SOC
+                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
+                pev.waitingtime = evcs.waittime
+                pev.charged = 1
+                sim_time += pev.chargingtime
+                sim_time += evcs.waittime
+
+            if not pev.charged:
+                cslist = []
+                for cs in CS_list:
+                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
+                    if airdist < evcango:
+                        cslist.append(cs)
+                for cs in cslist:
+                    evcs_id = cs.id
+                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
+                    front_path = reconstruct_path(came_from, here, evcs_id)
+                    front_path_distance = graph.get_path_distance(front_path)
+                    if front_path_distance > evcango:
+                        continue
+                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
+                    rear_path = reconstruct_path(came_from, evcs_id, end)
+                    rear_path_distance = graph.get_path_distance(rear_path)
+
+                    final_path = front_path + rear_path[1:]
+                    cost_road = graph.get_path_weight(final_path) * 60
+                    dist = graph.get_path_distance(final_path)
+                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
+                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
+                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
+                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
+                    w = cost_road + UNITtimecost*(cs.waittime+c_time) + c_energy*cs.price
+                    totaltraveltime = d_time + cs.waittime + c_time
+                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
+
+                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
+                pev.cs = evcs
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+            else:
+                came_from, cost_so_far = a_star_search(graph, here, end)
+                path = reconstruct_path(came_from, here, end)
+                path_distance = graph.get_path_distance(path)
+                if path_distance > evcango:
+                    print('error')
+                    input()
+                pev.next_location = path[1]
+                pev.path.append(pev.next_location)
+                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
+                pev.curr_location = pev.next_location
+
+        evcs = pev.cs
+        print('CS alpha:', evcs.alpha)
+        print('CS Waiting: ', evcs.waittime)
+        print('Distance(km): ', pev.drivingdistance)
+        print('Real Driving time(m): ', pev.drivingtime)
+        print('Real Charging energy(kwh): ', pev.charingenergy)
+        print('Real Charging time(m): ', pev.chargingtime)
+        print('Real Waiting time(m): ', evcs.waittime)
+        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
+
+        sim_n += 1
+
+    return EV_list
 
 def sim_result_presentation(time_EV_list, dist_EV_list, cost_EV_list, costtime_EV_list):
 
@@ -1445,7 +1880,7 @@ def sim_result_presentation(time_EV_list, dist_EV_list, cost_EV_list, costtime_E
 
     fw.close()
 
-def sim_result_general_presentation(resultdir, numev, **results):
+def sim_result_general_presentation(graph, resultdir, numev, **results):
     keyname = ''
     for key in results.keys():
         keyname += '_'+ key
@@ -1455,33 +1890,43 @@ def sim_result_general_presentation(resultdir, numev, **results):
     dirpath = os.path.join(basepath, resultdir)
     createFolder(dirpath)
 
-    plt.figure(figsize=(12, 6), dpi=300)
+
 
     keylist = list(results.keys())
 
-
+    plt.figure(figsize=(12, 12), dpi=300)
     for i in range(numev):
+        kth_result=1
         for key, EVlist in results.items():
             pev = EVlist[i]
             xx = []
             yy = []
+            nth=0
             for nid in pev.path:
                 x, y = graph.nodes_xy(nid)
+                plt.text(x+kth_result*0.1,y,str(nth))
                 xx.append(x)
                 yy.append(y)
+                nth+=1
             plt.plot(xx, yy, label=key)
+
             cs_x, cs_y = graph.nodes_xy(pev.cs.id)
             plt.plot(cs_x, cs_y, 'D', label=key+' EVCS')
+            kth_result+=1
 
         s_x, s_y = graph.nodes_xy(pev.source)
         plt.plot(s_x, s_y, 'p', label='Source')
         d_x, d_y = graph.nodes_xy(pev.destination)
         plt.plot(d_x, d_y, 'h', label='Destination')
 
+        plt.xlim(graph.minx, graph.maxx)
+        plt.ylim(graph.miny, graph.maxy)
         plt.legend()
         fig = plt.gcf()
         fig.savefig('{}/route_{}.png'.format(resultdir, i), facecolor='#eeeeee', dpi=300)
         plt.clf()
+
+
 
 
 
@@ -1492,20 +1937,27 @@ def sim_result_general_presentation(resultdir, numev, **results):
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.cs.id)
-        plt.plot(range(len(r1_list)), r1_list,'x', label=key)
+        plt.plot(range(len(r1_list)), r1_list,'x',  label=key)
     plt.legend()
+    # plt.xlim(graph.minx, graph.maxx)
+    # plt.ylim(graph.miny, graph.maxy)
     fig = plt.gcf()
     fig.savefig('{}/EVCS.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
     plt.clf()
 
+    linetype = ['-', '--', ':', '-.']
+
+    plt.figure(figsize=(12, 6), dpi=300)
     plt.title('Charging Cost')
     plt.xlabel('EV ID')
     plt.ylabel('Cost($)')
+    cnt=0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.chargingcost)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt+=1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Charging Cost.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1514,11 +1966,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Driving distance')
     plt.xlabel('EV ID')
     plt.ylabel('Distance(km)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.drivingdistance)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Driving distance.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1527,11 +1981,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Distance from S to EVCS')
     plt.xlabel('EV ID')
     plt.ylabel('Distance(km)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.fdist)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Distance from S to EVCS.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1540,12 +1996,14 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Driving time')
     plt.xlabel('EV ID')
     plt.ylabel('Time(min)')
+    cnt = 0
     for key, EVlist in results.items():
         numev = len(EVlist)
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.drivingtime)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Driving time.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1554,11 +2012,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Charging energy')
     plt.xlabel('EV ID')
     plt.ylabel('Energy(kWh)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.charingenergy)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Charging energy.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1567,11 +2027,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Charging time')
     plt.xlabel('EV ID')
     plt.ylabel('Time(min)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.chargingtime)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Charging time.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1580,11 +2042,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Waiting time')
     plt.xlabel('EV ID')
     plt.ylabel('Time(min)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.waitingtime)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Waiting time.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1593,11 +2057,13 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('Total travel time')
     plt.xlabel('EV ID')
     plt.ylabel('Time(min)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.waitingtime + ev.chargingtime + ev.drivingtime)
-        plt.plot(r1_list, label=key)
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/Total travel time.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1606,16 +2072,20 @@ def sim_result_general_presentation(resultdir, numev, **results):
     plt.title('EV SOC')
     plt.xlabel('EV ID')
     plt.ylabel('SOC(%)')
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.init_SOC)
-        plt.plot(r1_list, label=key+'init SOC')
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
+    cnt = 0
     for key, EVlist in results.items():
         r1_list = []
         for ev in EVlist:
             r1_list.append(ev.SOC)
-        plt.plot(r1_list, label=key+'final SOC')
+        plt.plot(r1_list, linetype[cnt], label=key)
+        cnt += 1
     plt.legend()
     fig = plt.gcf()
     fig.savefig('{}/ev SOC.png'.format(resultdir), facecolor='#eeeeee', dpi=300)
@@ -1717,407 +2187,20 @@ def sim_result_text(resultdir, **results):
 
     fw.close()
 
-def sim_main_time_every_node_check(t_EV_list, t_CS_list, t_graph):
-    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
-    # Min total travel time
-    EV_list = copy.deepcopy(t_EV_list)
-    CS_list = copy.deepcopy(t_CS_list)
-    graph = copy.deepcopy(t_graph)
-    sim_n = 0
-
-    for pev in EV_list:
-        sim_time = pev.t_start
-        print("\n===========================time_every sim: {}==================================".format(sim_n))
-        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
-
-        start = pev.source
-        end = pev.destination
-        pev.curr_location = start
-        pev.path.append(start)
-
-        while pev.curr_location != end:
-            here = pev.curr_location
-            paths_info = PriorityQueue()
-            update_envir_timeweight(CS_list, graph, sim_time)
-            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
-
-            if pev.cs != None  and pev.cs.id == pev.curr_location:
-                evcs=pev.cs
-                print('CS')
-                gen_evcs_random(evcs)
-                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
-                pev.chargingcost = pev.charingenergy * evcs.price
-                pev.SOC = pev.req_SOC
-                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
-                pev.waitingtime = evcs.waittime
-                pev.charged = 1
-                sim_time += pev.chargingtime
-                sim_time += evcs.waittime
-
-            if not pev.charged:
-                cslist = []
-                for cs in CS_list:
-                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
-                    if airdist < evcango:
-                        cslist.append(cs)
-                for cs in cslist:
-                    evcs_id = cs.id
-                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
-                    front_path = reconstruct_path(came_from, here, evcs_id)
-                    front_path_distance = graph.get_path_distance(front_path)
-                    if front_path_distance > evcango:
-                        continue
-                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
-                    rear_path = reconstruct_path(came_from, evcs_id, end)
-                    rear_path_distance = graph.get_path_distance(rear_path)
-                    final_path = front_path + rear_path[1:]
-                    dist = graph.get_path_distance(final_path)
-                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
-                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
-                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
-                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
-                    w = d_time + cs.waittime + c_time
-                    totaltraveltime = d_time + cs.waittime + c_time
-                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
-
-                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
-                pev.cs = evcs
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-            else:
-                came_from, cost_so_far = a_star_search(graph, here, end)
-                path = reconstruct_path(came_from, here, end)
-                path_distance = graph.get_path_distance(path)
-                if path_distance > evcango:
-                    print('error')
-                    input()
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-        evcs = pev.cs
-        print('CS alpha:', evcs.alpha)
-        print('CS Waiting: ', evcs.waittime)
-        print('Distance(km): ', pev.drivingdistance)
-        print('Real Driving time(m): ', pev.drivingtime)
-        print('Real Charging energy(kwh): ', pev.charingenergy)
-        print('Real Charging time(m): ', pev.chargingtime)
-        print('Real Waiting time(m): ', evcs.waittime)
-        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
-
-        sim_n += 1
-
-    return EV_list
-
-def sim_main_dist_every_node_check(t_EV_list, t_CS_list, t_graph):
-    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
-    # Min total travel time
-    EV_list = copy.deepcopy(t_EV_list)
-    CS_list = copy.deepcopy(t_CS_list)
-    graph = copy.deepcopy(t_graph)
-    sim_n = 0
-
-    for pev in EV_list:
-        sim_time = pev.t_start
-        print("\n===========================dist_every sim: {}==================================".format(sim_n))
-        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
-
-        start = pev.source
-        end = pev.destination
-        pev.curr_location = start
-        pev.path.append(start)
-
-        while pev.curr_location != end:
-            here = pev.curr_location
-            paths_info = PriorityQueue()
-            update_envir_distweight(CS_list, graph, sim_time)
-            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
-
-            if pev.cs != None  and pev.cs.id == pev.curr_location:
-                evcs=pev.cs
-                print('CS')
-                gen_evcs_random(evcs)
-                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
-                pev.chargingcost = pev.charingenergy * evcs.price
-                pev.SOC = pev.req_SOC
-                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
-                pev.waitingtime = evcs.waittime
-                pev.charged = 1
-                sim_time += pev.chargingtime
-                sim_time += evcs.waittime
-
-            if not pev.charged:
-                cslist = []
-                for cs in CS_list:
-                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
-                    if airdist < evcango:
-                        cslist.append(cs)
-                for cs in cslist:
-                    evcs_id = cs.id
-                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
-                    front_path = reconstruct_path(came_from, here, evcs_id)
-                    front_path_distance = graph.get_path_distance(front_path)
-                    if front_path_distance > evcango:
-                        continue
-                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
-                    rear_path = reconstruct_path(came_from, evcs_id, end)
-                    rear_path_distance = graph.get_path_distance(rear_path)
-                    final_path = front_path + rear_path[1:]
-                    dist = graph.get_path_distance(final_path)
-                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
-                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
-                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
-                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
-                    w = dist
-                    totaltraveltime = d_time + cs.waittime + c_time
-                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
-
-                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
-                pev.cs = evcs
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-            else:
-                came_from, cost_so_far = a_star_search(graph, here, end)
-                path = reconstruct_path(came_from, here, end)
-                path_distance = graph.get_path_distance(path)
-                if path_distance > evcango:
-                    print('error')
-                    input()
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-        evcs = pev.cs
-        print('CS alpha:', evcs.alpha)
-        print('CS Waiting: ', evcs.waittime)
-        print('Distance(km): ', pev.drivingdistance)
-        print('Real Driving time(m): ', pev.drivingtime)
-        print('Real Charging energy(kwh): ', pev.charingenergy)
-        print('Real Charging time(m): ', pev.chargingtime)
-        print('Real Waiting time(m): ', evcs.waittime)
-        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
-
-        sim_n += 1
-
-    return EV_list
-
-def sim_main_cost_every_node_check(t_EV_list, t_CS_list, t_graph):
-    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
-    # Min total travel time
-    EV_list = copy.deepcopy(t_EV_list)
-    CS_list = copy.deepcopy(t_CS_list)
-    graph = copy.deepcopy(t_graph)
-    sim_n = 0
-
-    for pev in EV_list:
-        sim_time = pev.t_start
-        print("\n===========================cost_everysim: {}==================================".format(sim_n))
-        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
-
-        start = pev.source
-        end = pev.destination
-        pev.curr_location = start
-        pev.path.append(start)
-
-        while pev.curr_location != end:
-            here = pev.curr_location
-            paths_info = PriorityQueue()
-            update_envir_costweight(CS_list,pev, graph, sim_time)
-            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
-
-            if pev.cs != None  and pev.cs.id == pev.curr_location:
-                evcs=pev.cs
-                print('CS')
-                gen_evcs_random(evcs)
-                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
-                pev.chargingcost = pev.charingenergy * evcs.price
-                pev.SOC = pev.req_SOC
-                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
-                pev.waitingtime = evcs.waittime
-                pev.charged = 1
-                sim_time += pev.chargingtime
-                sim_time += evcs.waittime
-
-            if not pev.charged:
-                cslist = []
-                for cs in CS_list:
-                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
-                    if airdist < evcango:
-                        cslist.append(cs)
-                for cs in cslist:
-                    evcs_id = cs.id
-                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
-                    front_path = reconstruct_path(came_from, here, evcs_id)
-                    front_path_distance = graph.get_path_distance(front_path)
-                    if front_path_distance > evcango:
-                        continue
-                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
-                    rear_path = reconstruct_path(came_from, evcs_id, end)
-                    rear_path_distance = graph.get_path_distance(rear_path)
-                    final_path = front_path + rear_path[1:]
-                    cost_road = graph.get_path_weight(final_path) * 60
-
-                    dist = graph.get_path_distance(final_path)
-                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
-                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
-                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
-                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
-                    w = cost_road + c_energy*cs.price
-                    totaltraveltime = d_time + cs.waittime + c_time
-                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
-
-                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
-                pev.cs = evcs
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-            else:
-                came_from, cost_so_far = a_star_search(graph, here, end)
-                path = reconstruct_path(came_from, here, end)
-                path_distance = graph.get_path_distance(path)
-                if path_distance > evcango:
-                    print('error')
-                    input()
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-        evcs = pev.cs
-        print('CS alpha:', evcs.alpha)
-        print('CS Waiting: ', evcs.waittime)
-        print('Distance(km): ', pev.drivingdistance)
-        print('Real Driving time(m): ', pev.drivingtime)
-        print('Real Charging energy(kwh): ', pev.charingenergy)
-        print('Real Charging time(m): ', pev.chargingtime)
-        print('Real Waiting time(m): ', evcs.waittime)
-        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
-
-        sim_n += 1
-
-    return EV_list
-
-def sim_main_cost_time_every_node_check(t_EV_list, t_CS_list, t_graph):
-    # 시뮬레이션 시간은 유닛은 minute, 매 노드마다 경로를 다시 탐색한다.
-    # Min total travel time
-    EV_list = copy.deepcopy(t_EV_list)
-    CS_list = copy.deepcopy(t_CS_list)
-    graph = copy.deepcopy(t_graph)
-    sim_n = 0
-
-    for pev in EV_list:
-        sim_time = pev.t_start
-        print("\n===========================cost_time_every sim: {}==================================".format(sim_n))
-        print("ID {}    S:{}   D:{}  Time:{}".format(pev.id, pev.source, pev.destination, pev.t_start))
-
-        start = pev.source
-        end = pev.destination
-        pev.curr_location = start
-        pev.path.append(start)
-
-        while pev.curr_location != end:
-            here = pev.curr_location
-            paths_info = PriorityQueue()
-            update_envir_costtimeweight(CS_list, pev, graph, sim_time)
-            evcango = pev.SOC * pev.maxBCAPA / pev.ECRate
-
-            if pev.cs != None  and pev.cs.id == pev.curr_location:
-                evcs=pev.cs
-                print('CS')
-                gen_evcs_random(evcs)
-                pev.charingenergy = pev.maxBCAPA * pev.req_SOC - pev.SOC * pev.maxBCAPA
-                pev.chargingcost = pev.charingenergy * evcs.price
-                pev.SOC = pev.req_SOC
-                pev.chargingtime = (pev.charingenergy / (evcs.chargingpower * pev.chaging_effi)) * 60
-                pev.waitingtime = evcs.waittime
-                pev.charged = 1
-                sim_time += pev.chargingtime
-                sim_time += evcs.waittime
-
-            if not pev.charged:
-                cslist = []
-                for cs in CS_list:
-                    airdist = heuristic(graph.nodes_xy(pev.curr_location), graph.nodes_xy(cs.id))
-                    if airdist < evcango:
-                        cslist.append(cs)
-                for cs in cslist:
-                    evcs_id = cs.id
-                    came_from, cost_so_far = a_star_search(graph, here, evcs_id)
-                    front_path = reconstruct_path(came_from, here, evcs_id)
-                    front_path_distance = graph.get_path_distance(front_path)
-                    if front_path_distance > evcango:
-                        continue
-                    came_from, cost_so_far = a_star_search(graph, evcs_id, end)
-                    rear_path = reconstruct_path(came_from, evcs_id, end)
-                    rear_path_distance = graph.get_path_distance(rear_path)
-
-                    final_path = front_path + rear_path[1:]
-                    cost_road = graph.get_path_weight(final_path) * 60
-                    dist = graph.get_path_distance(final_path)
-                    d_time = graph.get_path_drivingtime(final_path, int(sim_time / 5)) * 60
-                    remainenergy = pev.maxBCAPA * pev.init_SOC - front_path_distance * pev.ECRate
-                    c_energy = pev.maxBCAPA * pev.req_SOC - remainenergy
-                    c_time = (c_energy / (cs.chargingpower * pev.chaging_effi)) * 60
-                    w = cost_road + UNITtimecost*(cs.waittime+c_time) + c_energy*cs.price
-                    totaltraveltime = d_time + cs.waittime + c_time
-                    paths_info.put((remainenergy, final_path, front_path, front_path_distance, rear_path, rear_path_distance, cs, d_time, c_time, c_energy, totaltraveltime), w)
-
-                remainenergy, path, fpath, fpath_dist, rpath, rpath_dist, evcs, dtime, c, c_energy, totaltraveltime = paths_info.get()
-                pev.cs = evcs
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-            else:
-                came_from, cost_so_far = a_star_search(graph, here, end)
-                path = reconstruct_path(came_from, here, end)
-                path_distance = graph.get_path_distance(path)
-                if path_distance > evcango:
-                    print('error')
-                    input()
-                pev.next_location = path[1]
-                pev.path.append(pev.next_location)
-                sim_time = update_ev(pev, graph, pev.curr_location, pev.next_location, sim_time)
-                pev.curr_location = pev.next_location
-
-        evcs = pev.cs
-        print('CS alpha:', evcs.alpha)
-        print('CS Waiting: ', evcs.waittime)
-        print('Distance(km): ', pev.drivingdistance)
-        print('Real Driving time(m): ', pev.drivingtime)
-        print('Real Charging energy(kwh): ', pev.charingenergy)
-        print('Real Charging time(m): ', pev.chargingtime)
-        print('Real Waiting time(m): ', evcs.waittime)
-        print('Real Total time(m): ', evcs.waittime + pev.chargingtime + pev.drivingtime)
-
-        sim_n += 1
-
-    return EV_list
-
 if __name__ == "__main__":
 
-    npev = 20
+    epoch=0
+    npev = 100
     now = datetime.datetime.now()
-    resultdir = '{0:02}-{1:02} {2:02}-{3:02}'.format(now.month, now.day, now.hour, now.minute)
+    resultdir = '{0:02}-{1:02} {2:02}-{3:02} {4:02}-epoch_{5:02}'.format(now.month, now.day, now.hour, now.minute, now.second, epoch)
     basepath = os.getcwd()
 
     dirpath = os.path.join(basepath, resultdir)
     createFolder(dirpath)
 
     np.random.seed(100)
-    print('jeju')
-    EV_list, CS_list, graph = gen_envir_jeju('data/20191001_5Min_modified.csv', npev)
+    # EV_list, CS_list, graph = gen_envir_jeju('data/20191001_5Min_modified.csv', npev)
+    EV_list, CS_list, graph = gen_envir_simple(npev)
     # for pev in EV_list:
     #     print("{} {} {} {} {} {}".format(pev.id, pev.source, pev.destination, pev.t_start, pev.init_SOC, pev.SOC))
     # for css in CS_list:
@@ -2135,14 +2218,13 @@ if __name__ == "__main__":
 
     sim_result_text(resultdir, one_time=time_EV_list, one_dist=dist_EV_list, one_cost=cost_EV_list, one_costtime=costtime_EV_list, every_time=time_v2_EV_list, every_dist=dist_v2_EV_list, every_cost=cost_v2_EV_list, every_costtime=costtime_v2_EV_list)
 
-    sim_result_general_presentation(resultdir, npev, one_time=time_EV_list, every_time=time_v2_EV_list)
-    sim_result_general_presentation(resultdir, npev, one_dist=dist_EV_list, every_dist=dist_v2_EV_list)
-    sim_result_general_presentation(resultdir, npev, one_cost=cost_EV_list, every_cost=cost_v2_EV_list)
-    sim_result_general_presentation(resultdir, npev, one_costtime=costtime_EV_list, every_costtime=costtime_v2_EV_list)
-    sim_result_general_presentation(resultdir, npev, one_time=time_EV_list, one_dist=dist_EV_list, one_cost=cost_EV_list, one_costtime=costtime_EV_list)
-    sim_result_general_presentation(resultdir, npev, every_time=time_v2_EV_list, every_dist=dist_v2_EV_list, every_cost=cost_v2_EV_list, every_costtime=costtime_v2_EV_list)
-    #
-    #
+    sim_result_general_presentation(graph, resultdir, npev, one_time=time_EV_list, every_time=time_v2_EV_list)
+    sim_result_general_presentation(graph, resultdir, npev, one_dist=dist_EV_list, every_dist=dist_v2_EV_list)
+    sim_result_general_presentation(graph, resultdir, npev, one_cost=cost_EV_list, every_cost=cost_v2_EV_list)
+    sim_result_general_presentation(graph, resultdir, npev, one_costtime=costtime_EV_list, every_costtime=costtime_v2_EV_list)
+    sim_result_general_presentation(graph, resultdir, npev, one_time=time_EV_list, one_dist=dist_EV_list, one_cost=cost_EV_list, one_costtime=costtime_EV_list)
+    sim_result_general_presentation(graph, resultdir, npev, every_time=time_v2_EV_list, every_dist=dist_v2_EV_list, every_cost=cost_v2_EV_list, every_costtime=costtime_v2_EV_list)
+    epoch+=1
 
 
 
